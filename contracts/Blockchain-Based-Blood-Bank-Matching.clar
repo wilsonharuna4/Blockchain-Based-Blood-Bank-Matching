@@ -14,6 +14,11 @@
 (define-constant ERR_INVALID_EXPIRATION (err u113))
 (define-constant BLOOD_SHELF_LIFE_BLOCKS u6048)
 
+(define-constant REPUTATION_DECAY_RATE u1)
+(define-constant POINTS_PER_DONATION u100)
+(define-constant DECAY_THRESHOLD_BLOCKS u1440)
+
+
 (define-data-var next-unit-id uint u1)
 
 (define-data-var next-schedule-id uint u1)
@@ -440,4 +445,87 @@
 
 (define-read-only (get-blood-unit (unit-id uint))
   (map-get? blood-units {unit-id: unit-id})
+)
+
+(define-map donor-reputation
+  { donor-id: uint }
+  {
+    total-donations: uint,
+    last-donation-block: uint,
+    reputation-score: uint,
+    lifetime-points: uint
+  }
+)
+
+(define-map donation-history
+  { donation-id: uint }
+  {
+    donor-id: uint,
+    blood-type: (string-ascii 3),
+    donation-block: uint,
+    points-earned: uint
+  }
+)
+
+(define-data-var next-donation-id uint u1)
+
+(define-private (calculate-reputation-score (donor-id uint))
+  (match (map-get? donor-reputation {donor-id: donor-id})
+    rep (let (
+      (blocks-since-last (- stacks-block-height (get last-donation-block rep)))
+      (decay-amount (if (> blocks-since-last DECAY_THRESHOLD_BLOCKS)
+        (* (/ blocks-since-last DECAY_THRESHOLD_BLOCKS) REPUTATION_DECAY_RATE)
+        u0
+      ))
+      (current-score (get reputation-score rep))
+    )
+      (if (> current-score decay-amount)
+        (- current-score decay-amount)
+        u0
+      )
+    )
+    u0
+  )
+)
+
+(define-public (record-donation (donor-id uint))
+  (let (
+    (donor (unwrap! (map-get? donors {donor-id: donor-id}) ERR_NOT_FOUND))
+    (current-rep (default-to {total-donations: u0, last-donation-block: u0, reputation-score: u0, lifetime-points: u0} (map-get? donor-reputation {donor-id: donor-id})))
+    (updated-score (+ (calculate-reputation-score donor-id) POINTS_PER_DONATION))
+    (donation-id (var-get next-donation-id))
+  )
+    (map-set donor-reputation
+      {donor-id: donor-id}
+      {
+        total-donations: (+ (get total-donations current-rep) u1),
+        last-donation-block: stacks-block-height,
+        reputation-score: updated-score,
+        lifetime-points: (+ (get lifetime-points current-rep) POINTS_PER_DONATION)
+      }
+    )
+    (map-set donation-history
+      {donation-id: donation-id}
+      {
+        donor-id: donor-id,
+        blood-type: (get blood-type donor),
+        donation-block: stacks-block-height,
+        points-earned: POINTS_PER_DONATION
+      }
+    )
+    (var-set next-donation-id (+ donation-id u1))
+    (ok donation-id)
+  )
+)
+
+(define-read-only (get-donor-reputation (donor-id uint))
+  (map-get? donor-reputation {donor-id: donor-id})
+)
+
+(define-read-only (get-current-reputation-score (donor-id uint))
+  (ok (calculate-reputation-score donor-id))
+)
+
+(define-read-only (get-donation-record (donation-id uint))
+  (map-get? donation-history {donation-id: donation-id})
 )
