@@ -18,6 +18,11 @@
 (define-constant POINTS_PER_DONATION u100)
 (define-constant DECAY_THRESHOLD_BLOCKS u1440)
 
+(define-constant ERR_INVALID_DEMAND_WEIGHT (err u114))
+(define-constant DEFAULT_DEMAND_WEIGHT u1)
+(define-constant URGENCY_MULTIPLIER u10)
+
+(define-data-var next-demand-event-id uint u1)
 
 (define-data-var next-unit-id uint u1)
 
@@ -528,4 +533,81 @@
 
 (define-read-only (get-donation-record (donation-id uint))
   (map-get? donation-history {donation-id: donation-id})
+)
+
+(define-map blood-type-demand
+  { blood-type: (string-ascii 3) }
+  {
+    total-requests: uint,
+    total-demand-score: uint,
+    last-request-block: uint,
+    high-urgency-count: uint
+  }
+)
+
+(define-map demand-events
+  { event-id: uint }
+  {
+    blood-type: (string-ascii 3),
+    urgency-level: uint,
+    demand-score: uint,
+    recorded-block: uint
+  }
+)
+
+(define-private (calculate-demand-score (urgency-level uint))
+  (+ DEFAULT_DEMAND_WEIGHT (* urgency-level URGENCY_MULTIPLIER))
+)
+
+(define-public (record-blood-demand (blood-type (string-ascii 3)) (urgency-level uint))
+  (let (
+    (event-id (var-get next-demand-event-id))
+    (demand-score (calculate-demand-score urgency-level))
+    (current-demand (default-to 
+      {total-requests: u0, total-demand-score: u0, last-request-block: u0, high-urgency-count: u0} 
+      (map-get? blood-type-demand {blood-type: blood-type})
+    ))
+    (is-high-urgency (>= urgency-level u4))
+  )
+    (asserts! (is-valid-blood-type blood-type) ERR_INVALID_BLOOD_TYPE)
+    (asserts! (<= urgency-level u5) (err u106))
+    
+    (map-set blood-type-demand
+      {blood-type: blood-type}
+      {
+        total-requests: (+ (get total-requests current-demand) u1),
+        total-demand-score: (+ (get total-demand-score current-demand) demand-score),
+        last-request-block: stacks-block-height,
+        high-urgency-count: (if is-high-urgency 
+          (+ (get high-urgency-count current-demand) u1) 
+          (get high-urgency-count current-demand)
+        )
+      }
+    )
+    
+    (map-set demand-events
+      {event-id: event-id}
+      {
+        blood-type: blood-type,
+        urgency-level: urgency-level,
+        demand-score: demand-score,
+        recorded-block: stacks-block-height
+      }
+    )
+    
+    (var-set next-demand-event-id (+ event-id u1))
+    (ok event-id)
+  )
+)
+
+(define-read-only (get-blood-type-demand (blood-type (string-ascii 3)))
+  (map-get? blood-type-demand {blood-type: blood-type})
+)
+
+(define-read-only (get-demand-event (event-id uint))
+  (map-get? demand-events {event-id: event-id})
+)
+
+(define-read-only (get-total-demand-events)
+  (ok (var-get next-demand-event-id))
 )
